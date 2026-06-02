@@ -170,7 +170,7 @@ See [`NOTICE.md`](NOTICE.md) for the full list of upstream copyrights and licens
 - [x] 6a — DLL wrapper written, built (MinGW 15.2), packaged, smoke test shellcode
 - [x] 6b — Crystal Palace CLI verified, real PICO built end-to-end
 - [x] 6c — Dual use case A/B: `generate-implant.sh` + `bundle-implant.sh`
-- [ ] 6d — Runtime test on Windows x64 lab (smoketest + real PICO, both flows)
+- [x] 6d — Runtime test on Windows x64 lab (smoketest + real PICO, both flows)
 
 ---
 
