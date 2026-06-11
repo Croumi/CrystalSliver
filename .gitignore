@@ -15,6 +15,9 @@ external/
 *.exe
 bin/
 build/
+# Generated embed headers (xxd output — can be 100s of MB, always rebuilt)
+pico_payload.h
+crystalexec_pico.h
 
 # Archives / dist downloads
 *.tgz
