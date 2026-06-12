@@ -115,8 +115,8 @@ ls -la build/
 
 Expected files after the above:
 
-- `crystal-loader.x64.dll` (~232 KB, in `sliver-glue/` parent)
-- `crystal-exec.x64.dll` (~328 KB, in `sliver-glue/` parent)
+- `crystal-loader.x64.dll` (~42 KB, in `sliver-glue/` parent)
+- `crystal-exec.x64.dll` (~75 KB, in `sliver-glue/` parent)
 - `build/smoketest.bin` (3 bytes: `31 c0 c3` = `xor eax,eax; ret`)
 - `build/crystal-loader-0.1.0.tar.gz` (~37 KB)
 
@@ -295,6 +295,10 @@ The extension tarball `crystal-kit-sliver/sliver-glue/build/crystal-loader-0.1.0
 - `crystal-loader.x64.dll` — provides the `crystal` command
 - `crystal-exec.x64.dll` — provides the `crystal-exec` command (see Phase 4)
 
+> **Defender surface:** the extension DLLs (`crystal-loader.x64.dll`, `crystal-exec.x64.dll`) are loaded **in-memory** by Sliver's extension system — they are sent over the C2 channel and mapped directly into the implant process. They are never written as files to the target disk and are not visible to Defender's on-access file scanner.
+>
+> The **PICO file** you upload in step 3.4 (`upload ... C:/Windows/Temp/mytool.bin`) **does** land on disk and will be scanned by Defender on write. Keep PICO files small, avoid common shellcode patterns at offset 0 (Crystal Palace's XOR mask helps here), and delete the file after execution (step 5 cleanup).
+
 ### 3.1 Install the extension (one-time per session)
 
 ```
@@ -356,6 +360,8 @@ If the DLL calls `BeaconPrintf` or `BeaconOutput`, the output is forwarded to th
 ## Phase 4 — crystal-exec (built-in command executor)
 
 The `crystal-exec` command runs an arbitrary shell command on the target through the Crystal Palace evasion stack. No file to upload — the executor PICO is embedded inside `crystal-exec.x64.dll` at build time. Output is returned to the Sliver console via an anonymous pipe; no disk artifact is created.
+
+Like `crystal-loader.x64.dll`, the `crystal-exec.x64.dll` DLL is loaded **in-memory** by Sliver and never written to disk on the target. This means Defender's file scanner does not see it. The embedded PICO bytes are XOR-encrypted with a fresh 256-byte key at build time (`gen_pico_header.py`), so static patterns from Crystal Palace do not appear in the DLL's `.data` section.
 
 ### 4.1 Install the extension (same tarball as Phase 3)
 

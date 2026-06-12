@@ -64,7 +64,7 @@ Pass runtime args without a rebuild by appending them after `|`:
 sliver > crystal --payload C:/path/file.pico.bin|args here
 ```
 
-The `crystal-loader.x64.dll` is a Sliver DLL Extension that allocates RWX memory, loads the PICO blob, and jumps to the Crystal Palace entrypoint. Paths use forward slashes. Arg format is `type:string` (not BOF binary).
+The `crystal-loader.x64.dll` is a Sliver DLL Extension that reads the PICO blob from disk into a `VirtualAlloc(RW)` region, flips it to RX with `VirtualProtect`, and jumps to the Crystal Palace entrypoint. No `PAGE_EXECUTE_READWRITE` mapping is ever held. Paths use forward slashes. Arg format is `type:string` (not BOF binary). The DLL is loaded in-memory by Sliver — it is not written as a file to the target disk.
 
 ### C — Built-in shell execution via Crystal Palace
 
@@ -108,7 +108,7 @@ docs/
 
 ```bash
 # 1. Toolchain
-sudo apt install -y mingw-w64 nasm default-jdk make zip git curl
+sudo apt install -y mingw-w64 nasm openjdk-17-jdk make zip git curl
 
 # 2. Crystal Palace dist (BSD-3-Clause, Raphael Mudge)
 mkdir -p external/crystalpalace
@@ -154,7 +154,7 @@ See `docs/RUNBOOK.md` for the full operator procedure (Sliver install, listener 
 | Crystal Palace CLI verified | OK | `./link <spec> <dll> <out.bin> [%KEY=value]` — positional, documented in `dist/README` |
 | End-to-end PICO build (Use case A) | OK | 117 KB PICO produced from test DLL |
 | End-to-end PICO build (Use case B) | OK | 111 KB PICO produced via `postex-loader/loader.spec` |
-| Sliver Extension wrapper DLL builds | OK | `crystal-loader.x64.dll` ~232 KB, `crystal-exec.x64.dll` ~328 KB — both PE32+ exporting `go` symbol |
+| Sliver Extension wrapper DLL builds | OK | `crystal-loader.x64.dll` ~42 KB, `crystal-exec.x64.dll` ~75 KB — both PE32+ exporting `Initialize` symbol; no RWX; stripped |
 | Extension tarball packs correctly | OK | 37 KB tarball validated with `tar -tzf` |
 | Custom stager build (two-file delivery) | OK | `bundle-stager.sh` → `csvchelper.exe` (17 KB, entropy 4.784) + `payload.dat` (AES-256-CBC) |
 | Runtime execution on Windows (Use case A) | OK | Sliver session established on Windows 10 x64 FLARE-VM; stager passes Defender (Wacatac.B!ml + ZomBytes.B) |
