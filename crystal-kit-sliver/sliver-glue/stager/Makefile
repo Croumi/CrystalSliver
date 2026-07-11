@@ -37,9 +37,9 @@ resource.o: resource.rc
 	$(WINDRES) resource.rc -o resource.o
 
 # ── Step 3: link final EXE ────────────────────────────────────────────────
-$(OUTPUT): stager.c payload_key.h resource.o
+$(OUTPUT): stager.c hellshall.c hellshall.h payload_key.h resource.o
 	@mkdir -p "$(dir $(OUTPUT))"
-	$(CC) $(CFLAGS) -o "$(abspath $(OUTPUT))" stager.c resource.o $(LDFLAGS)
+	$(CC) $(CFLAGS) -o "$(abspath $(OUTPUT))" stager.c hellshall.c resource.o $(LDFLAGS)
 
 clean:
 	rm -f payload_key.h resource.o
