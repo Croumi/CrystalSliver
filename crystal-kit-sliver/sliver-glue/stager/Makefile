@@ -27,7 +27,7 @@ CFLAGS_COMMON    := -Wall -Os -ffunction-sections -fdata-sections
 CFLAGS_LAUNCHER  := $(CFLAGS_COMMON) -mwindows -DPLUGIN_NAME=\"$(PLUGIN_NAME)\"
 CFLAGS_PLUGIN    := $(CFLAGS_COMMON)
 LDFLAGS_COMMON   := -s -Wl,--gc-sections
-LDFLAGS_LAUNCHER := $(LDFLAGS_COMMON) -ladvapi32 -lbcrypt
+LDFLAGS_LAUNCHER := $(LDFLAGS_COMMON) -ladvapi32 -lbcrypt -lntdll
 LDFLAGS_PLUGIN   := $(LDFLAGS_COMMON) -shared -Wl,--kill-at
 
 .PHONY: all clean
@@ -54,9 +54,9 @@ resource.o: resource.rc
 # ── Step 3a: link launcher.exe ────────────────────────────────────────────
 #    payload_key.h is a launcher-only prerequisite — never a plugin dep, to
 #    keep the AES key out of the DLL's .rdata.
-$(OUTPUT): launcher.c payload_key.h resource.o
+$(OUTPUT): launcher.c ghost.c ghost.h payload_key.h resource.o
 	@mkdir -p "$(dir $(OUTPUT))"
-	$(CC) $(CFLAGS_LAUNCHER) -o "$(abspath $(OUTPUT))" launcher.c resource.o $(LDFLAGS_LAUNCHER)
+	$(CC) $(CFLAGS_LAUNCHER) -o "$(abspath $(OUTPUT))" launcher.c ghost.c resource.o $(LDFLAGS_LAUNCHER)
 
 # ── Step 3b: link csvhelper.dll ───────────────────────────────────────────
 #    No resource.o (skipped — see design notes; add resource.rc for the DLL
