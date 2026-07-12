@@ -61,9 +61,9 @@ $(OUTPUT): launcher.c payload_key.h resource.o
 # ── Step 3b: link csvhelper.dll ───────────────────────────────────────────
 #    No resource.o (skipped — see design notes; add resource.rc for the DLL
 #    only if lab EDR flags on the bare VERSIONINFO absence).
-$(PLUGIN): plugin.c
+$(PLUGIN): plugin.c spoof.c spoof.h spoof_stub.S
 	@mkdir -p "$(dir $(PLUGIN))"
-	$(CC) $(CFLAGS_PLUGIN) -o "$(abspath $(PLUGIN))" plugin.c $(LDFLAGS_PLUGIN)
+	$(CC) $(CFLAGS_PLUGIN) -o "$(abspath $(PLUGIN))" plugin.c spoof.c spoof_stub.S $(LDFLAGS_PLUGIN)
 
 clean:
 	rm -f payload_key.h resource.o

